@@ -79,16 +79,59 @@ function label(key, val) {
 }
 function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function renderList(items, warning=false) { return `<ul class="result-list ${warning?'warning-list':''}">${items.map(x=>`<li>${escapeHtml(x)}</li>`).join('')}</ul>`; }
+let chatMessages = [];
+let activeContext = '';
+let chatBusy = false;
+let llmConfig = { endpoint: 'https://api.openai.com/v1/chat/completions', model: 'gpt-4o-mini', key: '' };
+
+function getLLMConfig() {
+  if ($('llm-key')) return { endpoint: $('llm-endpoint').value.trim(), model: $('llm-model').value.trim(), key: $('llm-key').value.trim() };
+  return {...llmConfig};
+}
+function openSettings() {
+  let modal = $('settings-modal');
+  if (!modal) {
+    modal = document.createElement('div'); modal.id = 'settings-modal'; modal.className = 'modal-backdrop';
+    modal.innerHTML = `<section class="settings-card" role="dialog" aria-modal="true" aria-labelledby="settings-title"><button class="modal-close" id="close-settings" aria-label="Close">×</button><div class="section-kicker">CONNECTION</div><h2 id="settings-title">Connect your LLM</h2><p>Use an OpenAI-compatible chat-completions API. Your key stays in this tab's memory and is not saved by Nodewise.</p><label class="field-label" for="llm-endpoint">API endpoint</label><input class="text-input" id="llm-endpoint" value="https://api.openai.com/v1/chat/completions" autocapitalize="off" autocomplete="off"><label class="field-label" for="llm-model">Model name</label><input class="text-input" id="llm-model" value="gpt-4o-mini" autocapitalize="off" autocomplete="off"><label class="field-label" for="llm-key">API key</label><input class="text-input" id="llm-key" type="password" placeholder="Paste your API key" autocomplete="off"><p class="security-note"><b>Security:</b> this static GitHub Pages app sends your key directly from your browser to the provider. Do not use a key with sensitive or high spending limits. For a public production app, use a backend/serverless proxy instead.</p><div class="modal-actions"><button class="secondary-button" id="cancel-settings">Cancel</button><button class="primary-button" id="save-settings">Use this connection</button></div></section>`;
+    document.body.appendChild(modal);
+    $('close-settings').onclick = $('cancel-settings').onclick = () => modal.remove();
+    $('save-settings').onclick = () => { const cfg = getLLMConfig(); if (!cfg.endpoint || !cfg.model || !cfg.key) { showToast('Enter endpoint, model, and API key'); return; } llmConfig = {...cfg}; modal.remove(); showToast('LLM connection configured for this tab'); if ($('chat-input')) $('chat-input').focus(); };
+    modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+  }
+}
+$('llm-settings')?.addEventListener('click', openSettings);
 function renderPlan(p, v) {
-  $('results').innerHTML = `<div class="result-header"><div><div class="section-kicker">02 / YOUR DEPLOYMENT PLAN</div><h2 class="result-title">${escapeHtml(p.projectName)}</h2><div class="result-subtitle">A first-pass plan based on your project profile.</div></div><span class="confidence-pill">STARTING POINT</span></div>
-    <section class="result-section"><h3><span class="num">01</span> Connectivity recommendation</h3><div class="recommendation-card"><div class="tech-name">${escapeHtml(p.conn.primary)}</div><p class="tech-reason">${escapeHtml(p.conn.reason)}</p><div class="chips">${p.conn.chips.map(c=>`<span class="chip">${escapeHtml(c)}</span>`).join('')}</div></div></section>
-    <section class="result-section"><h3><span class="num">02</span> Suggested architecture</h3><div class="architecture">${p.architecture.map((a,i)=>`${i?'<span class="arch-arrow">→</span>':''}<div class="arch-node">${escapeHtml(a)}</div>`).join('')}</div></section>
-    <section class="result-section"><h3><span class="num">03</span> Sensors & power</h3>${renderList([...p.sensorAdvice,...p.powerAdvice])}</section>
-    <section class="result-section"><h3><span class="num">04</span> Prototype roadmap</h3>${renderList(p.roadmap)}</section>
-    <section class="result-section"><h3><span class="num">05</span> Risks to validate</h3>${renderList(p.risks,true)}</section>
-    <section class="result-section"><h3><span class="num">AI</span> Prompt-engineering brief</h3><p class="result-subtitle" style="margin-bottom:10px">Use this context with an LLM for a deeper design review. This demo generates recommendations locally and does not call an AI API.</p><div class="prompt-box" id="prompt-output">${escapeHtml(p.prompt)}</div><div class="result-actions"><button class="secondary-button" id="copy-prompt">Copy prompt ↗</button><button class="secondary-button" id="copy-plan">Copy plan ↗</button></div></section>`;
-  $('copy-prompt').addEventListener('click', () => copyText(p.prompt, 'Prompt copied'));
-  $('copy-plan').addEventListener('click', () => copyText(planAsText(p), 'Plan copied'));
+  activeContext = `The user is planning an IoT/ECE project. Use this profile as context, but allow them to change direction or ask about any IoT use case.\nProject: ${p.projectName}\nGoal: ${v.goal}\nDistance: ${label('distance',v.distance)}\nPower: ${label('power',v.power)}\nData frequency: ${label('dataRate',v.dataRate)}\nEnvironment: ${label('environment',v.environment)}\nBudget: ${label('budget',v.budget)}\nInternet availability: ${label('coverage',v.coverage)}\n\nGive practical, uncertainty-aware engineering guidance. Ask clarifying questions when needed, compare alternatives, mention safety/security/regulatory considerations, and never claim untested coverage or exact battery life.`;
+  chatMessages = [];
+  $('results').innerHTML = `<div class="chat-header"><div><div class="section-kicker">NODEWISE AI / CONVERSATION</div><h2 class="result-title">${escapeHtml(p.projectName)}</h2><p class="result-subtitle">Your project profile is attached as context. Ask anything, then continue with follow-ups.</p></div><button class="secondary-button" id="edit-context">Edit profile</button></div><div class="context-strip"> <span class="context-dot"></span> Project context attached · ${escapeHtml(label('power',v.power))} · ${escapeHtml(label('distance',v.distance))}</div><div class="chat-transcript" id="chat-transcript" aria-live="polite"><div class="chat-bubble assistant"><div class="bubble-label">NODEWISE</div>Hi! I'm your IoT deployment assistant. I have your project profile as context. What would you like to figure out first? You can ask me to compare connectivity options, choose sensors, estimate power needs, design the architecture, or troubleshoot an issue.</div></div><div class="chat-compose"><textarea id="chat-input" class="text-input chat-textarea" rows="2" placeholder="Ask a follow-up about your IoT project…" aria-label="Message the IoT advisor"></textarea><button class="send-button" id="send-chat" aria-label="Send message">➤</button></div><div class="chat-footer"><span id="chat-status">Connect an LLM in AI settings to start chatting.</span><button class="text-button" id="clear-chat">New conversation</button></div>`;
+  $('edit-context').onclick = () => { $('goal').focus(); $('advisor-form').scrollIntoView({behavior:'smooth',block:'start'}); };
+  $('send-chat').onclick = sendChatMessage;
+  $('chat-input').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMessage(); } });
+  $('clear-chat').onclick = () => { chatMessages = []; $('chat-transcript').innerHTML = `<div class="chat-bubble assistant"><div class="bubble-label">NODEWISE</div>New conversation started. What would you like to explore?</div>`; $('chat-status').textContent = 'Conversation cleared.'; };
+  $('chat-input').focus();
+}
+function addBubble(role, text) {
+  const transcript = $('chat-transcript'); const bubble = document.createElement('div'); bubble.className = `chat-bubble ${role}`;
+  const labelText = role === 'user' ? 'YOU' : 'NODEWISE';
+  bubble.innerHTML = `<div class="bubble-label">${labelText}</div><div class="bubble-text">${escapeHtml(text).replace(/\n/g,'<br>')}</div>`;
+  transcript.appendChild(bubble); transcript.scrollTop = transcript.scrollHeight; return bubble;
+}
+async function sendChatMessage() {
+  if (chatBusy) return;
+  const input = $('chat-input'); const text = input?.value.trim(); if (!text) return;
+  const cfg = getLLMConfig();
+  if (!cfg.key) { openSettings(); showToast('Add your LLM API key first'); return; }
+  input.value = ''; chatMessages.push({role:'user',content:text}); addBubble('user',text);
+  const pending = addBubble('assistant','Thinking…'); pending.classList.add('pending'); chatBusy = true; $('send-chat').disabled = true; $('chat-status').textContent = 'Waiting for the model…';
+  try {
+    const response = await fetch(cfg.endpoint, {method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${cfg.key}`},body:JSON.stringify({model:cfg.model, messages:[{role:'system',content:`You are Nodewise, a helpful IoT systems advisor for ECE students and builders. Be conversational, technically accurate, practical, and explicit about assumptions. Help with sensors, MCUs, connectivity (Wi-Fi, BLE, Zigbee, LoRaWAN, cellular, Ethernet, CAN where relevant), power budgeting, architecture, deployment, debugging, and security. Ask concise clarifying questions when necessary. Never invent datasheet specifications or claim a design is validated. Prefer actionable steps and explain trade-offs.\n\nPROJECT CONTEXT:\n${activeContext}`} ,...chatMessages],temperature:0.4})});
+    const data = await response.json();
+    if (!response.ok) throw new Error(data?.error?.message || `Request failed (${response.status}). Check endpoint, model, and API key.`);
+    const answer = data?.choices?.[0]?.message?.content;
+    if (!answer) throw new Error('The model returned no text. Check that the selected endpoint supports chat completions.');
+    chatMessages.push({role:'assistant',content:answer}); pending.querySelector('.bubble-text').textContent = answer; pending.classList.remove('pending'); $('chat-status').textContent = `Connected · ${cfg.model}`;
+  } catch (err) { pending.querySelector('.bubble-text').textContent = `I couldn't reach the LLM: ${err.message}\n\nOpen AI settings and verify your endpoint, model, API key, account credits, and provider CORS support.`; pending.classList.remove('pending','assistant'); pending.classList.add('error'); $('chat-status').textContent = 'Connection error'; }
+  finally { chatBusy = false; $('send-chat').disabled = false; input.focus(); }
 }
 function planAsText(p) { return `${p.projectName}\n\nCONNECTIVITY\n${p.conn.primary}\n${p.conn.reason}\n\nARCHITECTURE\n${p.architecture.join(' -> ')}\n\nSENSORS\n${p.sensorAdvice.join('\n')}\n\nPOWER\n${p.powerAdvice.join('\n')}\n\nROADMAP\n${p.roadmap.map((x,i)=>`${i+1}. ${x}`).join('\n')}\n\nRISKS\n${p.risks.map(x=>'- '+x).join('\n')}`; }
 async function copyText(text, message) { try { await navigator.clipboard.writeText(text); showToast(message); } catch { const area=document.createElement('textarea');area.value=text;document.body.appendChild(area);area.select();document.execCommand('copy');area.remove();showToast(message); } }
