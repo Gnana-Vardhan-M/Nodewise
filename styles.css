@@ -71,3 +71,5 @@
   .nav-item:not(.active) { font-size: 0; }
   .nav-item.active { font-size: 0; }
 }
+
+.example-projects{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:10px}.example-projects>span{font-size:9px;color:#8791a4;margin-right:2px}.example-chip{border:1px solid #e4e0fb;background:#faf9ff;color:#6b58cb;border-radius:999px;padding:7px 9px;font:600 9px var(--sans);cursor:pointer}.example-chip:hover,.example-chip:focus{background:#eeeaff;border-color:#b8acf5;outline:none}@media(max-width:600px){.example-projects>span{width:100%;font-size:10px}.example-chip{font-size:10px;padding:9px 11px}}
