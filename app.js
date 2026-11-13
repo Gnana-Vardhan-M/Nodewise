@@ -1,141 +1,521 @@
+'use strict';
+/* Nodewise — IoT Deployment Advisor (v6)
+   Chat UI for any OpenAI-compatible chat-completions API, with push-to-talk voice. */
+
 const $ = (id) => document.getElementById(id);
-const form = $('advisor-form');
-let latestPlan = null;
 
-function chooseConnectivity(v) {
-  const {distance, power, dataRate, coverage, budget, environment} = v;
-  let primary, reason, chips;
-  if (dataRate === 'high') {
-    primary = coverage === 'no' ? 'Local Wi-Fi / Ethernet gateway' : 'Wi-Fi 6 or Ethernet';
-    reason = 'High-volume data needs a higher-throughput link. Keep heavy processing or video near a powered gateway, then send summaries to the cloud. Long-range low-power radios are not designed for continuous high-volume streams.';
-    chips = ['High throughput', 'Gateway recommended', 'Power-hungry'];
-  } else if (distance === 'long' && (power === 'battery' || power === 'solar') && dataRate === 'low') {
-    primary = 'LoRaWAN';
-    reason = 'A strong starting point for small, periodic sensor readings over long distances with low power use. You will need a LoRaWAN gateway or a compatible network service, and should verify coverage and regional frequency rules at the site.';
-    chips = ['Long range', 'Low data rate', 'Low power'];
-  } else if (distance === 'long' && coverage === 'no') {
-    primary = 'Sub-GHz radio / LoRa point-to-point';
-    reason = 'For remote sites without internet, a local radio link can carry telemetry to a nearby collector. If data must reach the internet, plan a gateway with backhaul such as cellular or a site network.';
-    chips = ['Remote sites', 'Gateway/backhaul needed', 'Site test required'];
-  } else if (distance === 'short' && (power === 'battery' || dataRate === 'low')) {
-    primary = 'Bluetooth Low Energy (BLE)';
-    reason = 'BLE is well suited to nearby battery-powered sensors that send small updates to a phone or gateway. It is not a direct internet connection by itself; add a gateway if remote monitoring is required.';
-    chips = ['Short range', 'Very low power', 'Phone/gateway friendly'];
-  } else if (coverage === 'yes' && distance !== 'long') {
-    primary = 'Wi-Fi';
-    reason = 'Wi-Fi is convenient where dependable coverage and power are available, especially for frequent updates or direct IP connectivity. For battery nodes, consider sleeping between transmissions or using a lower-power protocol.';
-    chips = ['IP connectivity', 'Easy prototyping', 'Higher power draw'];
-  } else if (distance === 'long' && coverage === 'yes' && power === 'mains') {
-    primary = 'Wi-Fi or cellular gateway';
-    reason = 'Use Wi-Fi where local infrastructure reaches the device; otherwise evaluate cellular at the site. For multiple remote low-data sensors, a local LoRaWAN network feeding one internet-connected gateway may reduce endpoint power needs.';
-    chips = ['Compare site coverage', 'Gateway option', 'Validate recurring costs'];
-  } else {
-    primary = 'Sub-GHz / LoRaWAN (evaluate first)';
-    reason = 'For moderate-to-long range telemetry with limited internet, evaluate a low-power radio and a gateway. Confirm required data rate, legal frequency band, antenna placement, and coverage before committing.';
-    chips = ['Low-data telemetry', 'Coverage test', 'Gateway may be needed'];
-  }
-  if (environment === 'industrial') reason += ' In industrial environments, also check interference, metal obstructions, grounding, enclosure rating, and whether wired Ethernet/RS-485 is more reliable for critical control.';
-  if (budget === 'low') reason += ' For a student prototype, start with development boards and a small bench test before buying deployment-scale hardware.';
-  return {primary, reason, chips};
-}
-function buildPlan(v) {
-  const conn = chooseConnectivity(v);
-  const powerAdvice = v.power === 'battery'
-    ? ['Choose a low-power sensor and radio; measure sleep and transmit current rather than relying only on datasheets.', 'Use deep sleep / duty cycling and send batches of readings when acceptable.', 'Estimate battery life using average current, battery capacity, temperature, and expected transmission frequency.']
-    : v.power === 'solar'
-    ? ['Estimate daily energy use, including radio bursts and standby current.', 'Size the panel and battery for poor-weather margin and local sunlight.', 'Add battery protection and monitor supply voltage in the prototype.']
-    : ['Use a regulated supply sized for peak current, not just average current.', 'Add brownout handling and safe restart behavior.', 'Consider a UPS or backup source if missed readings matter.'];
-  const sensorAdvice = /soil|farm|moisture/i.test(v.goal)
-    ? ['Start with a capacitive soil-moisture sensor; calibrate it for the actual soil and crop conditions.', 'Compare readings against a trusted reference and test sensor drift over several days.']
-    : /temperature|heat|thermal/i.test(v.goal)
-    ? ['Select a temperature sensor for the required range, accuracy, and response time.', 'Place it away from heat sources that do not represent the measurement you need.']
-    : /air|gas|quality|smoke/i.test(v.goal)
-    ? ['Choose a sensor matched to the target gas or air-quality metric; low-cost modules may need calibration and warm-up.', 'Plan periodic calibration and safe handling for any hazardous environment.']
-    : ['Choose sensors by measurement range, accuracy, calibration needs, and interface (I²C, SPI, UART, or analog).', 'Test sensor repeatability and drift under real operating conditions.'];
-  const architecture = v.coverage === 'yes' && v.distance !== 'long' && v.dataRate !== 'low'
-    ? ['Sensor + MCU', conn.primary, 'Cloud / dashboard']
-    : ['Sensor + low-power MCU', conn.primary, 'Gateway / backhaul', 'Dashboard / alerts'];
-  const risks = [];
-  if (v.distance === 'long') risks.push('Measure coverage at the actual installation points; walls, terrain, foliage, and antenna height change results.');
-  if (v.coverage !== 'yes') risks.push('Decide how the gateway reaches the internet—or whether local-only storage is enough.');
-  if (v.environment === 'outdoor') risks.push('Use an enclosure and connectors rated for rain, dust, UV, and the local temperature range.');
-  if (v.environment === 'industrial') risks.push('Test interference and grounding; separate safety-critical control from an unvalidated wireless link.');
-  risks.push('Protect device credentials, encrypt links where supported, update firmware safely, and avoid exposing device management ports publicly.');
-  const roadmap = ['Build one sensor node and log readings locally first.', 'Add the selected radio link and test packet delivery at the target distance.', 'Add gateway buffering, timestamps, and reconnect behavior for outages.', 'Build a dashboard and alert thresholds; test missing, delayed, and implausible readings.', 'Run a multi-day field test, measure power, and document limitations before scaling.'];
-  const projectName = v.projectName.trim() || 'IoT deployment';
-  const prompt = `You are an IoT systems engineer advising a student prototype. Give practical, evidence-aware guidance and clearly label assumptions. Do not claim a technology will work without a site test.\n\nPROJECT\nName: ${projectName}\nGoal: ${v.goal}\nDistance: ${label('distance', v.distance)}\nPower: ${label('power', v.power)}\nData frequency: ${label('dataRate', v.dataRate)}\nEnvironment: ${label('environment', v.environment)}\nBudget: ${label('budget', v.budget)}\nInternet availability: ${label('coverage', v.coverage)}\n\nPlease return: (1) recommended connectivity and why, (2) a simple sensor-to-dashboard architecture, (3) hardware categories to investigate without inventing exact prices, (4) power strategy, (5) prototype roadmap, (6) risks and validation tests, and (7) questions that would change the recommendation. Compare at least one alternative and mention relevant regional radio regulations. Avoid unsupported certainty.`;
-  return {projectName, conn, powerAdvice, sensorAdvice, architecture, risks, roadmap, prompt};
-}
-function label(key, val) {
-  const maps = {
-    distance: {short:'Short range',medium:'Medium range',long:'Long range'},
-    power: {mains:'Mains powered',battery:'Battery powered',solar:'Solar / energy harvesting'},
-    dataRate: {low:'Small readings every few minutes',medium:'Frequent updates / control',high:'High-volume data / audio / video'},
-    environment: {indoor:'Indoor / office',industrial:'Industrial / noisy',outdoor:'Outdoor / exposed'},
-    budget: {low:'Low / student prototype',medium:'Medium / reliable prototype',high:'High / production-oriented'},
-    coverage: {yes:'Wi-Fi / internet available',limited:'Limited or unreliable',no:'No direct internet'}
-  };
-  return maps[key][val] || val;
-}
-function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-function renderList(items, warning=false) { return `<ul class="result-list ${warning?'warning-list':''}">${items.map(x=>`<li>${escapeHtml(x)}</li>`).join('')}</ul>`; }
-let chatMessages = [];
-let activeContext = '';
-let chatBusy = false;
-let llmConfig = { endpoint: 'https://api.openai.com/v1/chat/completions', model: 'gpt-4o-mini', key: '' };
+/* ───────────────────────── Constants & persistent storage ───────────────────────── */
+const CONN_KEY = 'nodewise.connection.v1';   // { endpoint, model, key }
+const PREF_KEY = 'nodewise.prefs.v1';        // { voiceOutput }
+const DEFAULT_CONN = { endpoint: 'https://api.openai.com/v1/chat/completions', model: 'gpt-4o-mini', key: '' };
+const MAX_HISTORY = 24;            // messages sent to the model per request
+const IDLE_TIMEOUT_MS = 60000;     // abort if the server sends nothing for this long
+const SPEECH_CHUNK_MAX = 220;      // Chrome cuts off long utterances, so speak in small pieces
 
-function getLLMConfig() {
-  if ($('llm-key')) return { endpoint: $('llm-endpoint').value.trim(), model: $('llm-model').value.trim(), key: $('llm-key').value.trim() };
-  return {...llmConfig};
+const store = {
+  read(key) { try { const v = JSON.parse(localStorage.getItem(key) || 'null'); return v && typeof v === 'object' ? v : {}; } catch { return {}; } },
+  write(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch { return false; } },
+  remove(key) { try { localStorage.removeItem(key); } catch { /* storage unavailable */ } }
+};
+
+let conn = { ...DEFAULT_CONN, ...pickConn(store.read(CONN_KEY)) };
+let prefs = { voiceOutput: true, ...store.read(PREF_KEY) };
+
+function pickConn(o) {
+  const out = {};
+  for (const k of ['endpoint', 'model', 'key']) if (typeof o[k] === 'string' && o[k]) out[k] = o[k];
+  return out;
+}
+function saveConn() { return store.write(CONN_KEY, conn); }
+function savePrefs() { store.write(PREF_KEY, prefs); }
+// Ask the browser not to evict our storage under pressure (best effort, ignored where unsupported).
+try { navigator.storage?.persist?.(); } catch { /* ignore */ }
+
+/* ───────────────────────── Small helpers ───────────────────────── */
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function showToast(message) {
+  document.querySelector('.toast')?.remove();
+  const el = document.createElement('div');
+  el.className = 'toast'; el.setAttribute('role', 'status'); el.textContent = message;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 2600);
+}
+const LABELS = {
+  distance: { short: 'Short range', medium: 'Medium range', long: 'Long range' },
+  power: { mains: 'Mains powered', battery: 'Battery powered', solar: 'Solar / energy harvesting' },
+  dataRate: { low: 'Small readings every few minutes', medium: 'Frequent updates / control', high: 'High-volume data / audio / video' },
+  environment: { indoor: 'Indoor / office', industrial: 'Industrial / noisy', outdoor: 'Outdoor / exposed' },
+  budget: { low: 'Low / student prototype', medium: 'Medium / reliable prototype', high: 'High / production-oriented' },
+  coverage: { yes: 'Wi-Fi / internet available', limited: 'Limited or unreliable', no: 'No direct internet' }
+};
+const label = (key, val) => LABELS[key]?.[val] || val;
+const hasKey = () => !!conn.key;
+
+/* ───────────────────────── Connection status UI ───────────────────────── */
+function refreshConnectionUI() {
+  const connected = hasKey();
+  const dot = $('conn-dot'), title = $('conn-title'), sub = $('conn-sub'), hint = $('setup-hint');
+  if (dot) dot.classList.toggle('off', !connected);
+  if (title) title.textContent = connected ? 'AI connected' : 'Not connected';
+  if (sub) sub.textContent = connected ? `${conn.model} · key saved on this device` : 'Add your API key in AI settings';
+  if (hint) hint.innerHTML = connected
+    ? `Connected to <b>${escapeHtml(conn.model)}</b>. Fill in the profile and start the conversation.`
+    : 'First, add an API endpoint, model, and key in <b>AI settings</b>. You only need to do this once.';
+  const status = $('chat-status');
+  if (status && !chatBusy) status.textContent = connected ? `Ready · ${conn.model}` : 'Connect an LLM in AI settings to start chatting.';
+}
+
+/* ───────────────────────── Settings modal ───────────────────────── */
+let settingsOpener = null;
+function normalizeEndpoint(raw) {
+  let url;
+  try { url = new URL(raw.trim()); } catch { return null; }
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))) return null;
+  // Friendly fix: a bare ".../v1" base URL becomes ".../v1/chat/completions".
+  if (/\/v\d+\/?$/.test(url.pathname)) url.pathname = url.pathname.replace(/\/?$/, '/chat/completions');
+  return url.toString();
+}
+function closeSettings() {
+  const modal = $('settings-modal');
+  if (!modal) return;
+  modal.remove();
+  document.removeEventListener('keydown', onSettingsKey, true);
+  if (settingsOpener && document.contains(settingsOpener)) settingsOpener.focus();
+  settingsOpener = null;
+}
+function onSettingsKey(e) { if (e.key === 'Escape') { e.preventDefault(); closeSettings(); } }
+function saveSettings() {
+  const endpoint = normalizeEndpoint($('llm-endpoint').value);
+  const model = $('llm-model').value.trim();
+  const key = $('llm-key').value.trim();
+  if (!endpoint) { showToast('Endpoint must be a valid https:// URL'); $('llm-endpoint').focus(); return; }
+  if (!model) { showToast('Enter a model name'); $('llm-model').focus(); return; }
+  if (!key) { showToast('Enter your API key'); $('llm-key').focus(); return; }
+  conn = { endpoint, model, key };
+  quirks = {};                                  // new connection → forget learned provider quirks
+  const persisted = saveConn();
+  closeSettings();
+  refreshConnectionUI();
+  showToast(persisted ? 'Connection saved on this device' : 'Connected for this tab only (browser storage is unavailable)');
+  $('chat-input')?.focus();
+}
+function forgetKey() {
+  store.remove(CONN_KEY);
+  conn = { ...DEFAULT_CONN };
+  quirks = {};
+  closeSettings();
+  refreshConnectionUI();
+  showToast('Saved API key removed from this device');
 }
 function openSettings() {
-  let modal = $('settings-modal');
-  if (!modal) {
-    modal = document.createElement('div'); modal.id = 'settings-modal'; modal.className = 'modal-backdrop';
-    modal.innerHTML = `<section class="settings-card" role="dialog" aria-modal="true" aria-labelledby="settings-title"><button class="modal-close" id="close-settings" aria-label="Close">×</button><div class="section-kicker">CONNECTION</div><h2 id="settings-title">Connect your LLM</h2><p>Use an OpenAI-compatible chat-completions API. Your key stays in this tab's memory and is not saved by Nodewise.</p><label class="field-label" for="llm-endpoint">API endpoint</label><input class="text-input" id="llm-endpoint" value="https://api.openai.com/v1/chat/completions" autocapitalize="off" autocomplete="off"><label class="field-label" for="llm-model">Model name</label><input class="text-input" id="llm-model" value="gpt-4o-mini" autocapitalize="off" autocomplete="off"><label class="field-label" for="llm-key">API key</label><input class="text-input" id="llm-key" type="password" placeholder="Paste your API key" autocomplete="off"><p class="security-note"><b>Security:</b> this static GitHub Pages app sends your key directly from your browser to the provider. Do not use a key with sensitive or high spending limits. For a public production app, use a backend/serverless proxy instead.</p><div class="modal-actions"><button class="secondary-button" id="cancel-settings">Cancel</button><button class="primary-button" id="save-settings">Use this connection</button></div></section>`;
-    document.body.appendChild(modal);
-    $('close-settings').onclick = $('cancel-settings').onclick = () => modal.remove();
-    $('save-settings').onclick = () => { const cfg = getLLMConfig(); if (!cfg.endpoint || !cfg.model || !cfg.key) { showToast('Enter endpoint, model, and API key'); return; } llmConfig = {...cfg}; modal.remove(); showToast('LLM connection configured for this tab'); if ($('chat-input')) $('chat-input').focus(); };
-    modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
-  }
+  if ($('settings-modal')) return;
+  settingsOpener = document.activeElement;
+  const modal = document.createElement('div');
+  modal.id = 'settings-modal'; modal.className = 'modal-backdrop';
+  modal.innerHTML = `<section class="settings-card" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <button class="modal-close" id="close-settings" type="button" aria-label="Close">×</button>
+    <div class="section-kicker">CONNECTION</div><h2 id="settings-title">Connect your LLM</h2>
+    <p>Use any OpenAI-compatible chat-completions API. Your settings are saved in this browser on this device, so you only enter them once.</p>
+    <label class="field-label" for="llm-endpoint">API endpoint</label>
+    <input class="text-input" id="llm-endpoint" type="url" inputmode="url" autocapitalize="off" autocomplete="off" spellcheck="false">
+    <label class="field-label" for="llm-model">Model name</label>
+    <input class="text-input" id="llm-model" autocapitalize="off" autocomplete="off" spellcheck="false">
+    <label class="field-label" for="llm-key">API key</label>
+    <input class="text-input" id="llm-key" type="password" placeholder="Paste your API key" autocapitalize="off" autocomplete="off" spellcheck="false">
+    <label class="check-row"><input type="checkbox" id="llm-show"> Show key</label>
+    <p class="security-note"><b>Security:</b> the key is stored unencrypted in this browser's local storage and sent straight from your browser to the provider. Anyone who can use this browser profile could read it. Use a key with a low spending limit, and don't save it on a shared device. For a public app, use a backend proxy instead.</p>
+    <div class="modal-actions"><button class="secondary-button danger" id="forget-key" type="button">Remove saved key</button><span class="spacer"></span><button class="secondary-button" id="cancel-settings" type="button">Cancel</button><button class="primary-button" id="save-settings" type="button">Save connection</button></div>
+  </section>`;
+  document.body.appendChild(modal);
+  $('llm-endpoint').value = conn.endpoint; $('llm-model').value = conn.model; $('llm-key').value = conn.key;
+  $('forget-key').hidden = !store.read(CONN_KEY).key;
+  $('close-settings').onclick = $('cancel-settings').onclick = closeSettings;
+  $('save-settings').onclick = saveSettings;
+  $('forget-key').onclick = forgetKey;
+  $('llm-show').onchange = (e) => { $('llm-key').type = e.target.checked ? 'text' : 'password'; };
+  modal.addEventListener('click', (e) => { if (e.target === modal) closeSettings(); });
+  modal.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.tagName === 'INPUT' && e.target.type !== 'checkbox') { e.preventDefault(); saveSettings(); } });
+  document.addEventListener('keydown', onSettingsKey, true);
+  (hasKey() ? $('llm-model') : $('llm-key')).focus();
 }
 $('llm-settings')?.addEventListener('click', openSettings);
-function renderPlan(p, v) {
-  activeContext = `The user is planning an IoT/ECE project. Use this profile as context, but allow them to change direction or ask about any IoT use case.\nProject: ${p.projectName}\nGoal: ${v.goal}\nDistance: ${label('distance',v.distance)}\nPower: ${label('power',v.power)}\nData frequency: ${label('dataRate',v.dataRate)}\nEnvironment: ${label('environment',v.environment)}\nBudget: ${label('budget',v.budget)}\nInternet availability: ${label('coverage',v.coverage)}\n\nGive practical, uncertainty-aware engineering guidance. Ask clarifying questions when needed, compare alternatives, mention safety/security/regulatory considerations, and never claim untested coverage or exact battery life.`;
+
+/* ───────────────────────── Markdown (small, XSS-safe renderer) ───────────────────────── */
+function inlineMd(text) {
+  return text.split(/(`[^`\n]+`)/).map((part, i) => {
+    if (i % 2) return `<code>${escapeHtml(part.slice(1, -1))}</code>`;
+    return escapeHtml(part)
+      .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+      .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/(^|[^*\w])\*([^*\s][^*\n]*?)\*(?![*\w])/g, '$1<em>$2</em>');
+  }).join('');
+}
+function renderMarkdown(src) {
+  const out = [];
+  src.replace(/\r\n?/g, '\n').split('```').forEach((chunk, i) => {
+    if (i % 2) {                                            // fenced code (an unclosed fence also lands here while streaming)
+      out.push(`<pre><code>${escapeHtml(chunk.replace(/^[^\n]*\n/, '').replace(/\n$/, ''))}</code></pre>`);
+      return;
+    }
+    const lines = chunk.split('\n');
+    let para = [], list = null;
+    const flushPara = () => { if (para.length) { out.push(`<p>${para.map(inlineMd).join('<br>')}</p>`); para = []; } };
+    const flushList = () => { if (list) { out.push(`<${list.tag}>${list.items.map((t) => `<li>${inlineMd(t)}</li>`).join('')}</${list.tag}>`); list = null; } };
+    for (let n = 0; n < lines.length; n++) {
+      const line = lines[n]; let m;
+      if (!line.trim()) { flushPara(); flushList(); }
+      else if ((m = line.match(/^\s{0,3}(#{1,6})\s+(.*)$/))) { flushPara(); flushList(); out.push(`<h4>${inlineMd(m[2])}</h4>`); }
+      else if ((m = line.match(/^\s*(?:[-*•])\s+(.*)$/)) || (m = line.match(/^\s*\d+[.)]\s+(.*)$/))) {
+        flushPara();
+        const tag = /^\s*\d/.test(line) ? 'ol' : 'ul';
+        if (list && list.tag !== tag) flushList();
+        (list ||= { tag, items: [] }).items.push(m[1]);
+      }
+      else if (/^\s*\|.*\|\s*$/.test(line) && /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(lines[n + 1] || '')) {
+        flushPara(); flushList();
+        const cells = (l) => l.trim().replace(/^\||\|$/g, '').split('|').map((c) => inlineMd(c.trim()));
+        const head = cells(line); const rows = []; n += 2;
+        while (n < lines.length && /^\s*\|.*\|\s*$/.test(lines[n])) rows.push(cells(lines[n++]));
+        n--;
+        out.push(`<div class="table-wrap"><table><thead><tr>${head.map((c) => `<th>${c}</th>`).join('')}</tr></thead><tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`);
+      }
+      else { flushList(); para.push(line.trim()); }
+    }
+    flushPara(); flushList();
+  });
+  return out.join('');
+}
+
+/* ───────────────────────── Speech output (incremental, sentence by sentence) ───────────────────────── */
+let currentSpeaker = null;
+function speechSupported() { return 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window; }
+function stopSpeaking() {
+  if (currentSpeaker) currentSpeaker.cancelled = true;
+  currentSpeaker = null;
+  if (speechSupported()) window.speechSynthesis.cancel();
+}
+function cleanForSpeech(text) {
+  return text
+    .replace(/\[([^\]]+)\]\(https?:\/\/[^)]*\)/g, '$1')
+    .replace(/`+/g, '').replace(/\*+/g, '').replace(/^\s{0,3}#{1,6}\s+/gm, '')
+    .replace(/^\s*[-•]\s+/gm, '').replace(/^\s*\|?\s*:?-{2,}[-:|\s]*$/gm, '').replace(/\|/g, ', ')
+    .replace(/\s+/g, ' ').trim();
+}
+function splitLong(text) {
+  const pieces = [];
+  while (text.length > SPEECH_CHUNK_MAX) {
+    let cut = Math.max(text.lastIndexOf(', ', SPEECH_CHUNK_MAX), text.lastIndexOf('; ', SPEECH_CHUNK_MAX), text.lastIndexOf(' ', SPEECH_CHUNK_MAX));
+    if (cut < 40) cut = SPEECH_CHUNK_MAX;
+    pieces.push(text.slice(0, cut + 1).trim()); text = text.slice(cut + 1);
+  }
+  if (text.trim()) pieces.push(text.trim());
+  return pieces;
+}
+function createSpeaker() {
+  stopSpeaking();
+  if (!prefs.voiceOutput || !speechSupported()) return null;
+  const sp = { raw: '', inCode: false, cancelled: false };
+  const say = (chunk) => {
+    let visible = '';
+    chunk.split('```').forEach((part, i) => { if (i) sp.inCode = !sp.inCode; if (!sp.inCode) visible += part; });
+    for (const piece of splitLong(cleanForSpeech(visible))) {
+      if (!/[\p{L}\p{N}]/u.test(piece)) continue;
+      const u = new SpeechSynthesisUtterance(piece);
+      u.lang = navigator.language || 'en-IN'; u.rate = 1;
+      window.speechSynthesis.speak(u);
+    }
+  };
+  sp.push = (delta) => {
+    if (sp.cancelled) return;
+    sp.raw += delta;
+    let cut = -1, m; const re = /[.!?।]+["')\]]*\s|\n{2,}/g;
+    while ((m = re.exec(sp.raw))) cut = m.index + m[0].length;
+    if (cut > 0) { say(sp.raw.slice(0, cut)); sp.raw = sp.raw.slice(cut); }
+  };
+  sp.finish = () => { if (!sp.cancelled && sp.raw.trim()) say(sp.raw); sp.raw = ''; };
+  currentSpeaker = sp;
+  return sp;
+}
+
+/* ───────────────────────── Chat state ───────────────────────── */
+let chatMessages = [];
+let systemPrompt = '';
+let chatBusy = false;
+let convoId = 0;                 // bumps on reset so late responses can't leak into a new conversation
+let abortCtl = null;
+let abortReason = '';
+let quirks = {};                 // per-provider learnings (e.g. "no temperature", "no streaming")
+
+function addBubble(role, text = '') {
+  const transcript = $('chat-transcript');
+  const bubble = document.createElement('div');
+  bubble.className = `chat-bubble ${role}`;
+  bubble.innerHTML = `<div class="bubble-label">${role === 'user' ? 'YOU' : 'NODEWISE'}</div><div class="bubble-text"></div>`;
+  const body = bubble.querySelector('.bubble-text');
+  if (role === 'user') body.innerHTML = escapeHtml(text).replace(/\n/g, '<br>'); else if (text) body.innerHTML = renderMarkdown(text);
+  transcript.appendChild(bubble); transcript.scrollTop = transcript.scrollHeight;
+  return bubble;
+}
+function setBusy(busy) {
+  chatBusy = busy;
+  const send = $('send-chat');
+  if (!send) return;
+  send.classList.toggle('stop', busy);
+  send.textContent = busy ? '■' : '➤';
+  send.setAttribute('aria-label', busy ? 'Stop generating' : 'Send message');
+  $('chat-transcript')?.setAttribute('aria-busy', String(busy));
+}
+function resetConversation() {
+  convoId++;
+  abortReason = 'reset'; abortCtl?.abort();
+  stopSpeaking();
+  if (isListening) stopVoiceInput(false);
   chatMessages = [];
-  $('results').innerHTML = `<div class="chat-header"><div><div class="section-kicker">NODEWISE AI / CONVERSATION</div><h2 class="result-title">${escapeHtml(p.projectName)}</h2><p class="result-subtitle">Your project profile is attached as context. Ask anything, then continue with follow-ups.</p></div><button class="secondary-button" id="edit-context">Edit profile</button></div><div class="context-strip"> <span class="context-dot"></span> Project context attached · ${escapeHtml(label('power',v.power))} · ${escapeHtml(label('distance',v.distance))}</div><div class="chat-transcript" id="chat-transcript" aria-live="polite"><div class="chat-bubble assistant"><div class="bubble-label">NODEWISE</div>Hi! I'm your IoT deployment assistant. I have your project profile as context. What would you like to figure out first? You can ask me to compare connectivity options, choose sensors, estimate power needs, design the architecture, or troubleshoot an issue.</div></div><div class="chat-compose"><textarea id="chat-input" class="text-input chat-textarea" rows="2" placeholder="Ask a follow-up about your IoT project…" aria-label="Message the IoT advisor"></textarea><button class="send-button" id="send-chat" aria-label="Send message">➤</button></div><div class="chat-footer"><span id="chat-status">Connect an LLM in AI settings to start chatting.</span><button class="text-button" id="clear-chat">New conversation</button></div>`;
-  $('edit-context').onclick = () => { $('goal').focus(); $('advisor-form').scrollIntoView({behavior:'smooth',block:'start'}); };
-  $('send-chat').onclick = sendChatMessage;
-  $('chat-input').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMessage(); } });
-  $('clear-chat').onclick = () => { chatMessages = []; $('chat-transcript').innerHTML = `<div class="chat-bubble assistant"><div class="bubble-label">NODEWISE</div>New conversation started. What would you like to explore?</div>`; $('chat-status').textContent = 'Conversation cleared.'; };
-  $('chat-input').focus();
+  setBusy(false);
 }
-function addBubble(role, text) {
-  const transcript = $('chat-transcript'); const bubble = document.createElement('div'); bubble.className = `chat-bubble ${role}`;
-  const labelText = role === 'user' ? 'YOU' : 'NODEWISE';
-  bubble.innerHTML = `<div class="bubble-label">${labelText}</div><div class="bubble-text">${escapeHtml(text).replace(/\n/g,'<br>')}</div>`;
-  transcript.appendChild(bubble); transcript.scrollTop = transcript.scrollHeight; return bubble;
+
+/* ───────────────────────── Network: streaming chat completions ───────────────────────── */
+async function describeHttpError(response) {
+  let msg = '';
+  try {
+    const text = await response.text();
+    try { const j = JSON.parse(text); msg = j?.error?.message || j?.message || j?.error || ''; if (typeof msg !== 'string') msg = JSON.stringify(msg); } catch { msg = text.slice(0, 200); }
+  } catch { /* ignore */ }
+  const hint = { 401: 'The API key was rejected.', 403: 'Access denied for this key or model.', 404: 'Endpoint or model not found.', 429: 'Rate limit or quota reached; check credits.' }[response.status] || '';
+  const err = new Error([msg || `Request failed (${response.status}).`, hint].filter(Boolean).join(' '));
+  err.status = response.status; err.raw = msg;
+  return err;
 }
+async function readSSE(response, onDelta) {
+  const reader = response.body.getReader(); const decoder = new TextDecoder();
+  let buf = '';
+  const handle = (line) => {
+    if (!line.startsWith('data:')) return false;
+    const payload = line.slice(5).trim();
+    if (!payload) return false;
+    if (payload === '[DONE]') return true;
+    let j; try { j = JSON.parse(payload); } catch { return false; }
+    if (j.error) throw new Error(j.error.message || 'The provider reported an error mid-stream.');
+    const c = j.choices?.[0]; const d = c?.delta?.content ?? c?.text;
+    if (typeof d === 'string' && d) onDelta(d);
+    return false;
+  };
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split('\n'); buf = lines.pop();
+    for (const l of lines) if (handle(l.replace(/\r$/, ''))) { reader.cancel().catch(() => {}); return; }
+  }
+  if (buf) handle(buf.replace(/\r$/, ''));
+}
+async function requestCompletion(history, onDelta) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const ctl = abortCtl; let timer;
+    const arm = () => { clearTimeout(timer); timer = setTimeout(() => { abortReason = 'timeout'; ctl.abort(); }, IDLE_TIMEOUT_MS); };
+    arm();
+    try {
+      const body = { model: conn.model, messages: [{ role: 'system', content: systemPrompt }, ...history] };
+      if (!quirks.noTemperature) body.temperature = 0.4;
+      if (!quirks.noStream) body.stream = true;
+      const response = await fetch(conn.endpoint, {
+        method: 'POST', signal: ctl.signal,
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${conn.key}` },
+        body: JSON.stringify(body)
+      });
+      if (!response.ok) {
+        const err = await describeHttpError(response);
+        // Self-heal on providers/models that reject optional parameters, then retry.
+        if (err.status === 400 && /temperature/i.test(err.raw) && !quirks.noTemperature) { quirks.noTemperature = true; continue; }
+        if (err.status === 400 && /stream/i.test(err.raw) && !quirks.noStream) { quirks.noStream = true; continue; }
+        throw err;
+      }
+      if ((response.headers.get('content-type') || '').includes('text/event-stream') && response.body) {
+        let got = false;
+        await readSSE(response, (d) => { got = true; arm(); onDelta(d); });
+        if (!got) throw new Error('The model returned no text.');
+      } else {
+        const data = await response.json();
+        const answer = data?.choices?.[0]?.message?.content;
+        if (!answer) throw new Error('The model returned no text. Check that the endpoint supports chat completions.');
+        onDelta(answer);
+      }
+      return;
+    } finally { clearTimeout(timer); }
+  }
+  throw new Error('The provider rejected the request.');
+}
+
 async function sendChatMessage() {
   if (chatBusy) return;
-  const input = $('chat-input'); const text = input?.value.trim(); if (!text) return;
-  const cfg = getLLMConfig();
-  if (!cfg.key) { openSettings(); showToast('Add your LLM API key first'); return; }
-  input.value = ''; chatMessages.push({role:'user',content:text}); addBubble('user',text);
-  const pending = addBubble('assistant','Thinking…'); pending.classList.add('pending'); chatBusy = true; $('send-chat').disabled = true; $('chat-status').textContent = 'Waiting for the model…';
+  const input = $('chat-input'); const text = input?.value.trim();
+  if (!text) return;
+  if (!hasKey()) { openSettings(); showToast('Add your LLM API key first'); return; }
+
+  const myConvo = convoId;
+  input.value = '';
+  chatMessages.push({ role: 'user', content: text }); addBubble('user', text);
+  const bubble = addBubble('assistant'); bubble.classList.add('pending');
+  const body = bubble.querySelector('.bubble-text'); body.textContent = 'Thinking…';
+  setBusy(true); $('chat-status').textContent = 'Waiting for the model…';
+  abortCtl = new AbortController(); abortReason = '';
+
+  const transcript = $('chat-transcript');
+  const speaker = createSpeaker();
+  let answer = '', frame = 0;
+  const paint = () => {
+    frame = 0;
+    const stick = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 90;
+    body.innerHTML = renderMarkdown(answer);
+    if (stick) transcript.scrollTop = transcript.scrollHeight;
+  };
   try {
-    const response = await fetch(cfg.endpoint, {method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${cfg.key}`},body:JSON.stringify({model:cfg.model, messages:[{role:'system',content:`You are Nodewise, a helpful IoT systems advisor for ECE students and builders. Be conversational, technically accurate, practical, and explicit about assumptions. Help with sensors, MCUs, connectivity (Wi-Fi, BLE, Zigbee, LoRaWAN, cellular, Ethernet, CAN where relevant), power budgeting, architecture, deployment, debugging, and security. Ask concise clarifying questions when necessary. Never invent datasheet specifications or claim a design is validated. Prefer actionable steps and explain trade-offs.\n\nPROJECT CONTEXT:\n${activeContext}`} ,...chatMessages],temperature:0.4})});
-    const data = await response.json();
-    if (!response.ok) throw new Error(data?.error?.message || `Request failed (${response.status}). Check endpoint, model, and API key.`);
-    const answer = data?.choices?.[0]?.message?.content;
-    if (!answer) throw new Error('The model returned no text. Check that the selected endpoint supports chat completions.');
-    chatMessages.push({role:'assistant',content:answer}); pending.querySelector('.bubble-text').textContent = answer; pending.classList.remove('pending'); $('chat-status').textContent = `Connected · ${cfg.model}`;
-  } catch (err) { pending.querySelector('.bubble-text').textContent = `I couldn't reach the LLM: ${err.message}\n\nOpen AI settings and verify your endpoint, model, API key, account credits, and provider CORS support.`; pending.classList.remove('pending','assistant'); pending.classList.add('error'); $('chat-status').textContent = 'Connection error'; }
-  finally { chatBusy = false; $('send-chat').disabled = false; input.focus(); }
+    await requestCompletion(chatMessages.slice(-MAX_HISTORY), (delta) => {
+      if (myConvo !== convoId) return;
+      if (!answer) { bubble.classList.remove('pending'); $('chat-status').textContent = 'Receiving…'; }
+      answer += delta; speaker?.push(delta);
+      if (!frame) frame = requestAnimationFrame(paint);
+    });
+    if (myConvo !== convoId) return;
+    cancelAnimationFrame(frame); paint();
+    chatMessages.push({ role: 'assistant', content: answer });
+    speaker?.finish();
+    $('chat-status').textContent = `Connected · ${conn.model}`;
+  } catch (err) {
+    if (myConvo !== convoId) return;                       // conversation was reset; nothing to show
+    cancelAnimationFrame(frame);
+    const stopped = err.name === 'AbortError' && abortReason !== 'timeout';
+    if (answer) {                                          // keep whatever streamed in before the stop/failure
+      paint(); chatMessages.push({ role: 'assistant', content: answer }); speaker?.finish();
+      $('chat-status').textContent = stopped ? 'Stopped.' : `Interrupted: ${err.message}`;
+    } else {
+      chatMessages.pop();                                  // don't leave a dangling user turn in the history
+      speaker && (speaker.cancelled = true);
+      if (stopped) { bubble.previousElementSibling?.remove(); bubble.remove(); $('chat-status').textContent = 'Stopped.'; input.value = text; }
+      else {
+        const timedOut = abortReason === 'timeout';
+        const network = err instanceof TypeError;
+        const detail = timedOut ? 'The request timed out.' : network ? 'Network or CORS error: the provider may not allow direct browser requests, or you are offline.' : err.message;
+        body.textContent = `I couldn't reach the LLM: ${detail}\n\nOpen AI settings and verify your endpoint, model, API key, and account credits. Your message was put back in the box so you can retry.`;
+        bubble.classList.remove('pending', 'assistant'); bubble.classList.add('error');
+        $('chat-status').textContent = 'Connection error'; input.value = text;
+      }
+    }
+  } finally {
+    if (myConvo === convoId) { setBusy(false); abortCtl = null; if (document.activeElement === $('send-chat')) input.focus(); }  // keep the keyboard state; never pop it up after a voice send
+  }
 }
-function planAsText(p) { return `${p.projectName}\n\nCONNECTIVITY\n${p.conn.primary}\n${p.conn.reason}\n\nARCHITECTURE\n${p.architecture.join(' -> ')}\n\nSENSORS\n${p.sensorAdvice.join('\n')}\n\nPOWER\n${p.powerAdvice.join('\n')}\n\nROADMAP\n${p.roadmap.map((x,i)=>`${i+1}. ${x}`).join('\n')}\n\nRISKS\n${p.risks.map(x=>'- '+x).join('\n')}`; }
-async function copyText(text, message) { try { await navigator.clipboard.writeText(text); showToast(message); } catch { const area=document.createElement('textarea');area.value=text;document.body.appendChild(area);area.select();document.execCommand('copy');area.remove();showToast(message); } }
-function showToast(message) { const old=document.querySelector('.toast'); if(old) old.remove(); const el=document.createElement('div');el.className='toast';el.textContent=message;document.body.appendChild(el);setTimeout(()=>el.remove(),2300); }
-document.querySelectorAll('[data-example]').forEach(button => { button.addEventListener('click', () => { $('goal').value = button.dataset.example; $('goal').focus(); }); });
-form.addEventListener('submit', e => { e.preventDefault(); const v={projectName:$('project-name').value,goal:$('goal').value.trim(),distance:$('distance').value,power:$('power').value,dataRate:$('data-rate').value,environment:$('environment').value,budget:$('budget').value,coverage:$('coverage').value}; if(!v.goal){$('goal').focus();return;} latestPlan=buildPlan(v);renderPlan(latestPlan,v);$('results').scrollIntoView({behavior:'smooth',block:'start'}); });
-if ('serviceWorker' in navigator && location.protocol !== 'file:') { window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {})); }
+
+/* ───────────────────────── Voice input (push-to-talk) ───────────────────────── */
+let speechRecognition = null;
+let isListening = false;
+
+function setupVoiceControls() {
+  const mic = $('voice-mic'), output = $('voice-output'), stop = $('voice-stop');
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) {
+    mic.disabled = true;
+    $('voice-hint').textContent = 'Speech recognition is not available in this browser. Try Chrome on Android.';
+  } else {
+    mic.onclick = () => (isListening ? stopVoiceInput(true) : startVoiceInput(SR));
+  }
+  const paintOutput = () => {
+    output.textContent = prefs.voiceOutput ? '🔊 Voice replies: on' : '🔇 Voice replies: off';
+    output.setAttribute('aria-pressed', String(prefs.voiceOutput));
+  };
+  paintOutput();
+  output.onclick = () => { prefs.voiceOutput = !prefs.voiceOutput; savePrefs(); paintOutput(); if (!prefs.voiceOutput) stopSpeaking(); };
+  stop.onclick = stopSpeaking;
+}
+function resetVoiceButton() {
+  const mic = $('voice-mic'); if (!mic) return;
+  mic.textContent = '🎙 Start talking'; mic.classList.remove('listening');
+}
+function startVoiceInput(SR) {
+  if (chatBusy) { showToast('Wait for Nodewise to finish replying'); return; }
+  stopSpeaking();
+  const input = $('chat-input');
+  input.value = '';
+  const rec = new SR();
+  speechRecognition = rec;
+  rec.lang = navigator.language || 'en-IN'; rec.continuous = false; rec.interimResults = true;
+  let finalText = '', interim = '', failure = '', discard = false;
+  rec.discard = () => { discard = true; };
+  rec.onstart = () => {
+    isListening = true;
+    const mic = $('voice-mic'); mic.textContent = '■ Stop & send'; mic.classList.add('listening');
+    $('voice-hint').textContent = 'Listening… pause or tap Stop & send when done.';
+    input.placeholder = 'Listening to your question…';
+  };
+  rec.onresult = (event) => {
+    interim = '';
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const phrase = event.results[i][0].transcript;
+      if (event.results[i].isFinal) finalText += phrase + ' '; else interim += phrase;
+    }
+    input.value = (finalText + interim).trim();
+  };
+  rec.onerror = (event) => {
+    failure = event.error;
+    if (event.error === 'not-allowed' || event.error === 'service-not-allowed') $('voice-hint').textContent = 'Microphone permission was blocked. Allow it in your browser’s site settings.';
+    else if (event.error === 'no-speech') $('voice-hint').textContent = 'No speech detected. Tap the microphone to try again.';
+    else if (event.error !== 'aborted') $('voice-hint').textContent = `Voice input error: ${event.error}. You can type instead.`;
+  };
+  rec.onend = () => {
+    if (speechRecognition === rec) { speechRecognition = null; isListening = false; }
+    resetVoiceButton();
+    const el = $('chat-input'); if (!el) return;
+    el.placeholder = 'Ask a follow-up about your IoT project…';
+    if (discard) return;
+    const text = el.value.trim();
+    if (text && !failure) { $('voice-hint').textContent = 'Sent. Tap the microphone to talk again.'; sendChatMessage(); }
+    else if (!failure) $('voice-hint').textContent = 'No speech detected. Tap the microphone to try again.';
+  };
+  try { rec.start(); }
+  catch { speechRecognition = null; isListening = false; resetVoiceButton(); $('voice-hint').textContent = 'Could not start the microphone. Check browser permission.'; }
+}
+function stopVoiceInput(send = true) {
+  const rec = speechRecognition;
+  if (!rec) return;
+  if (!send) rec.discard?.();
+  try { send ? rec.stop() : rec.abort(); } catch { /* already stopped */ }
+  if (!send) { isListening = false; speechRecognition = null; resetVoiceButton(); }
+}
+
+/* ───────────────────────── Conversation view ───────────────────────── */
+function renderChat(v) {
+  const projectName = v.projectName.trim() || 'IoT deployment';
+  systemPrompt = `You are Nodewise, a helpful IoT systems advisor for ECE students and builders. Be conversational, technically accurate, practical, and explicit about assumptions. Help with sensors, MCUs, connectivity (Wi-Fi, BLE, Zigbee, LoRaWAN, cellular, Ethernet, CAN where relevant), power budgeting, architecture, deployment, debugging, and security. Ask concise clarifying questions when necessary. Never invent datasheet specifications or claim a design is validated. Prefer actionable steps and explain trade-offs. You may use light Markdown (short lists, bold, tables, code blocks).\n\nPROJECT CONTEXT:\nThe user is planning an IoT/ECE project. Use this profile as context, but allow them to change direction or ask about any IoT use case.\nProject: ${projectName}\nGoal: ${v.goal}\nDistance: ${label('distance', v.distance)}\nPower: ${label('power', v.power)}\nData frequency: ${label('dataRate', v.dataRate)}\nEnvironment: ${label('environment', v.environment)}\nBudget: ${label('budget', v.budget)}\nInternet availability: ${label('coverage', v.coverage)}\n\nGive practical, uncertainty-aware engineering guidance. Ask clarifying questions when needed, compare alternatives, mention safety/security/regulatory considerations, and never claim untested coverage or exact battery life.`;
+  resetConversation();
+  $('results').innerHTML = `<div class="chat-header"><div><div class="section-kicker">NODEWISE AI / CONVERSATION</div><h2 class="result-title">${escapeHtml(projectName)}</h2><p class="result-subtitle">Your project profile is attached as context. Ask anything, then continue with follow-ups.</p></div><button class="secondary-button" id="edit-context" type="button">Edit profile</button></div><div class="context-strip"><span class="context-dot"></span> Project context attached · ${escapeHtml(label('power', v.power))} · ${escapeHtml(label('distance', v.distance))}</div><div class="chat-transcript" id="chat-transcript" aria-live="polite"><div class="chat-bubble assistant"><div class="bubble-label">NODEWISE</div><div class="bubble-text">Hi! I'm your IoT deployment assistant. I have your project profile as context. What would you like to figure out first? You can ask me to compare connectivity options, choose sensors, estimate power needs, design the architecture, or troubleshoot an issue.</div></div></div><div class="chat-compose"><textarea id="chat-input" class="text-input chat-textarea" rows="2" placeholder="Ask a follow-up about your IoT project…" aria-label="Message the IoT advisor"></textarea><button class="send-button" id="send-chat" type="button" aria-label="Send message">➤</button></div><div class="voice-controls"><button class="voice-button primary" id="voice-mic" type="button" aria-label="Start voice input">🎙 Start talking</button><button class="voice-button" id="voice-output" type="button" aria-pressed="true">🔊 Voice replies: on</button><button class="voice-button" id="voice-stop" type="button">■ Stop audio</button><span class="voice-hint" id="voice-hint" aria-live="polite">Tap the microphone and speak. It sends when you pause or tap again.</span></div><div class="chat-footer"><span id="chat-status"></span><button class="text-button" id="clear-chat" type="button">New conversation</button></div>`;
+  $('edit-context').onclick = () => { $('goal').focus(); $('advisor-form').scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+  $('send-chat').onclick = () => (chatBusy ? (abortReason = 'user', abortCtl?.abort()) : sendChatMessage());
+  setupVoiceControls();
+  $('chat-input').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendChatMessage(); } });
+  $('clear-chat').onclick = () => {
+    resetConversation();
+    $('chat-transcript').innerHTML = '<div class="chat-bubble assistant"><div class="bubble-label">NODEWISE</div><div class="bubble-text">New conversation started. What would you like to explore?</div></div>';
+    $('chat-status').textContent = 'Conversation cleared.';
+  };
+  refreshConnectionUI();
+  $('chat-input').focus();
+}
+
+/* ───────────────────────── Page wiring ───────────────────────── */
+const form = $('advisor-form');
+document.querySelectorAll('[data-example]').forEach((button) => {
+  button.addEventListener('click', () => { $('goal').value = button.dataset.example; $('goal').focus(); });
+});
+form.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const v = { projectName: $('project-name').value, goal: $('goal').value.trim(), distance: $('distance').value, power: $('power').value, dataRate: $('data-rate').value, environment: $('environment').value, budget: $('budget').value, coverage: $('coverage').value };
+  if (!v.goal) { $('goal').focus(); return; }
+  renderChat(v);
+  $('results').scrollIntoView({ behavior: 'smooth', block: 'start' });
+});
+refreshConnectionUI();
+if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));
+}

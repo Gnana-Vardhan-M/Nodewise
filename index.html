@@ -8,6 +8,10 @@
   <title>Nodewise — IoT Deployment Advisor</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -17,7 +21,7 @@
       <div class="side-label">WORKSPACE</div>
       <a class="nav-item active" href="#planner"><span>⌘</span> Deployment planner</a>
       <a class="nav-item" href="#how-it-works"><span>◈</span> How it works</a>
-      <div class="side-bottom"><div class="status-dot"></div><div><strong>Local demo mode</strong><small>No account or API key needed</small></div></div>
+      <div class="side-bottom"><div class="status-dot off" id="conn-dot"></div><div><strong id="conn-title">Not connected</strong><small id="conn-sub">Add your API key in AI settings</small></div></div>
     </aside>
 
     <main id="top" class="main-content">
@@ -38,13 +42,13 @@
           </form>
         </div>
 
-        <div class="panel results-panel" id="results" aria-live="polite"><div class="empty-state"><div class="empty-illustration"><div class="empty-ring ring-a"></div><div class="empty-ring ring-b"></div><div class="empty-center">✳</div><span class="empty-spark spark-a">✦</span><span class="empty-spark spark-b">·</span></div><div class="section-kicker">YOUR AI CHAT STARTS HERE</div><h2>Talk through your IoT idea.</h2><p>Describe a project, ask follow-up questions, compare components, or troubleshoot a design with an LLM.</p><div class="empty-checks"><span>✓ Natural conversation</span><span>✓ Follow-up questions</span><span>✓ ECE-aware guidance</span></div><p class="setup-hint">First, add an API endpoint, model, and key in <b>AI settings</b>.</p></div></div>
+        <div class="panel results-panel" id="results" aria-live="polite"><div class="empty-state"><div class="empty-illustration"><div class="empty-ring ring-a"></div><div class="empty-ring ring-b"></div><div class="empty-center">✳</div><span class="empty-spark spark-a">✦</span><span class="empty-spark spark-b">·</span></div><div class="section-kicker">YOUR AI CHAT STARTS HERE</div><h2>Talk through your IoT idea.</h2><p>Describe a project, ask follow-up questions, compare components, or troubleshoot a design with an LLM.</p><div class="empty-checks"><span>✓ Natural conversation</span><span>✓ Follow-up questions</span><span>✓ ECE-aware guidance</span></div><p class="setup-hint" id="setup-hint">First, add an API endpoint, model, and key in <b>AI settings</b>. You only need to do this once.</p></div></div>
       </section>
 
       <section class="how-section" id="how-it-works"><div class="how-title"><div class="section-kicker">BUILT FOR PRACTICAL DECISIONS</div><h2>More than a list of technologies.</h2><p>Nodewise turns requirements into a plan you can explain, test, and improve.</p></div><div class="feature-grid"><article class="feature-card"><div class="feature-icon violet">⌁</div><h3>Match the connection</h3><p>Compare range, data volume, internet access, and power needs before choosing a protocol.</p></article><article class="feature-card"><div class="feature-icon mint">ϟ</div><h3>Think about power</h3><p>Get practical guidance for battery life, duty cycling, and solar-powered deployments.</p></article><article class="feature-card"><div class="feature-icon amber">⟲</div><h3>Build in stages</h3><p>Follow a prototype-first roadmap with validation checks and risks to investigate.</p></article></div></section>
       <footer><span>NODEWISE <span class="brand-dot">●</span> STUDENT PROJECT DEMO</span><span>Recommendations are illustrative, not a substitute for engineering validation.</span></footer>
     </main>
   </div>
-  <script src="app.js"></script>
+  <script src="app.js" defer></script>
 </body>
 </html>
