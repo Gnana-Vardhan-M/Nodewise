@@ -143,47 +143,101 @@ function openSettings() {
 $('llm-settings')?.addEventListener('click', openSettings);
 
 /* ───────────────────────── Markdown (small, XSS-safe renderer) ───────────────────────── */
-function inlineMd(text) {
-  return text.split(/(`[^`\n]+`)/).map((part, i) => {
-    if (i % 2) return `<code>${escapeHtml(part.slice(1, -1))}</code>`;
-    return escapeHtml(part)
-      .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
-      .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
-      .replace(/(^|[^*\w])\*([^*\s][^*\n]*?)\*(?![*\w])/g, '$1<em>$2</em>');
-  }).join('');
+const SUP = { '0':'⁰','1':'¹','2':'²','3':'³','4':'⁴','5':'⁵','6':'⁶','7':'⁷','8':'⁸','9':'⁹','-':'⁻','+':'⁺','n':'ⁿ' };
+const SUB = { '0':'₀','1':'₁','2':'₂','3':'₃','4':'₄','5':'₅','6':'₆','7':'₇','8':'₈','9':'₉' };
+const TEX = { times:'×', cdot:'·', approx:'≈', leq:'≤', le:'≤', geq:'≥', ge:'≥', neq:'≠', pm:'±', rightarrow:'→', to:'→', Rightarrow:'⇒', leftarrow:'←', mu:'µ', Omega:'Ω', omega:'ω', Delta:'Δ', delta:'δ', pi:'π', alpha:'α', beta:'β', lambda:'λ', theta:'θ', sigma:'σ', tau:'τ', eta:'η', degree:'°', circ:'°', infty:'∞' };
+const mapChars = (str, map) => ([...str].every((c) => map[c]) ? [...str].map((c) => map[c]).join('') : null);
+// Models sometimes answer with LaTeX ($...$, \( \), \frac, \times). Turn it into plain readable text.
+function texToText(t) {
+  return t
+    .replace(/\\(?:text|mathrm|mathbf|textbf|operatorname|mathit)\{([^{}]*)\}/g, '$1')
+    .replace(/\\frac\{([^{}]*)\}\{([^{}]*)\}/g, '($1)/($2)')
+    .replace(/\\sqrt\{([^{}]*)\}/g, '√($1)')
+    .replace(/\^\{?([0-9+\-n]+)\}?/g, (m, x) => mapChars(x, SUP) ?? `^${x}`)
+    .replace(/_\{?([0-9]+)\}?/g, (m, x) => mapChars(x, SUB) ?? `_${x}`)
+    .replace(/\\([A-Za-z]+)/g, (m, w) => TEX[w] ?? '')
+    .replace(/\\[,;: !]/g, ' ').replace(/[{}]/g, '').replace(/\s{2,}/g, ' ').trim();
 }
-function renderMarkdown(src) {
+function cleanMath(s) {
+  return s.replace(/\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)|\$([^$\n]*\\[A-Za-z][^$\n]*)\$/g, (m, a, b, c, d) => texToText(a ?? b ?? c ?? d));
+}
+function inlineMd(text, streaming) {
+  const keep = []; const hold = (h) => `\u0000${keep.push(h) - 1}\u0000`;
+  const A = (u) => `<a href="${u}" target="_blank" rel="noopener noreferrer">`;
+  let s = escapeHtml(text.replace(/`([^`\n]+)`/g, (m, c) => hold(`<code>${escapeHtml(c)}</code>`)))
+    .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (m, t, u) => hold(A(u)) + t + hold('</a>'))
+    .replace(/(^|[\s(])(https?:\/\/[^\s<>()]*[^\s<>().,;:!?'"])/g, (m, p, u) => p + hold(A(u)) + u + hold('</a>'))
+    .replace(/(^|[^A-Za-z0-9*\\])\*\*\*\s*(\S[\s\S]*?)\s*\*\*\*/g, '$1<strong><em>$2</em></strong>')
+    .replace(/(^|[^A-Za-z0-9*\\])\*\*\s*(\S[\s\S]*?)\s*\*\*/g, '$1<strong>$2</strong>')
+    .replace(/(^|[^A-Za-z0-9_\\])__(\S[\s\S]*?)__(?![A-Za-z0-9_])/g, '$1<strong>$2</strong>')
+    .replace(/(^|[^A-Za-z0-9*\\])\*([^\s*](?:[^*\n]*?[^\s*])?)\*(?![A-Za-z0-9*])/g, '$1<em>$2</em>')
+    .replace(/(^|[^A-Za-z0-9_\\])_([^\s_](?:[^_\n]*?[^\s_])?)_(?![A-Za-z0-9_])/g, '$1<em>$2</em>')
+    .replace(/~~(\S(?:[^~\n]*?\S)?)~~/g, '<del>$1</del>')
+    .replace(/&lt;br\s*\/?&gt;/gi, '<br>')
+    .replace(/\\([*_~#])/g, '$1')
+    .replace(/\*\*+/g, '');                       // never show stray / still-streaming bold markers
+  if (streaming) s = s.replace(/(^|\s)\*(?=\S)/g, '$1').replace(/[*_~]+$/, '');
+  return s.replace(/\u0000(\d+)\u0000/g, (m, i) => keep[i]);
+}
+const LIST_RE = /^(\s*)([-*+•]|\d{1,3}[.)])\s+(.*)$/;
+const HR_RE = /^\s*([-*_])(\s*\1){2,}\s*$/;
+const TBL_ROW = /^\s*\|.*\|\s*$/;
+const TBL_SEP = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
+function buildList(items, md) {
+  let html = ''; const stack = [];
+  const open = (it) => { html += it.tag === 'ol' && it.start > 1 ? `<ol start="${it.start}">` : `<${it.tag}>`; stack.push({ indent: it.indent, tag: it.tag }); };
+  for (const it of items) {
+    if (!stack.length) open(it);
+    else if (it.indent > stack[stack.length - 1].indent) open(it);   // deeper → nested list inside the open <li>
+    else {
+      while (stack.length > 1 && it.indent < stack[stack.length - 1].indent) html += `</li></${stack.pop().tag}>`;
+      html += '</li>';
+      const top = stack[stack.length - 1];
+      if (top.tag !== it.tag) { html += `</${top.tag}>`; stack.pop(); open(it); }
+    }
+    html += `<li>${md(it.text)}`;
+  }
+  while (stack.length) html += `</li></${stack.pop().tag}>`;
+  return html;
+}
+function renderMarkdown(src, streaming = false) {
   const out = [];
+  const md = (t) => inlineMd(t, streaming);
   src.replace(/\r\n?/g, '\n').split('```').forEach((chunk, i) => {
     if (i % 2) {                                            // fenced code (an unclosed fence also lands here while streaming)
       out.push(`<pre><code>${escapeHtml(chunk.replace(/^[^\n]*\n/, '').replace(/\n$/, ''))}</code></pre>`);
       return;
     }
-    const lines = chunk.split('\n');
-    let para = [], list = null;
-    const flushPara = () => { if (para.length) { out.push(`<p>${para.map(inlineMd).join('<br>')}</p>`); para = []; } };
-    const flushList = () => { if (list) { out.push(`<${list.tag}>${list.items.map((t) => `<li>${inlineMd(t)}</li>`).join('')}</${list.tag}>`); list = null; } };
+    const lines = cleanMath(chunk).split('\n');
+    let para = [], quote = [], items = [];
+    const flush = () => {
+      if (para.length) { out.push(`<p>${md(para.join('\n')).replace(/\n/g, '<br>')}</p>`); para = []; }
+      if (quote.length) { out.push(`<blockquote>${md(quote.join('\n')).replace(/\n/g, '<br>')}</blockquote>`); quote = []; }
+      if (items.length) { out.push(buildList(items, md)); items = []; }
+    };
     for (let n = 0; n < lines.length; n++) {
       const line = lines[n]; let m;
-      if (!line.trim()) { flushPara(); flushList(); }
-      else if ((m = line.match(/^\s{0,3}(#{1,6})\s+(.*)$/))) { flushPara(); flushList(); out.push(`<h4>${inlineMd(m[2])}</h4>`); }
-      else if ((m = line.match(/^\s*(?:[-*•])\s+(.*)$/)) || (m = line.match(/^\s*\d+[.)]\s+(.*)$/))) {
-        flushPara();
-        const tag = /^\s*\d/.test(line) ? 'ol' : 'ul';
-        if (list && list.tag !== tag) flushList();
-        (list ||= { tag, items: [] }).items.push(m[1]);
+      if (!line.trim()) { if (!items.length) flush(); continue; }          // blank lines inside a list don't end it
+      if (items.length && /^\s{2,}\S/.test(line) && !LIST_RE.test(line)) { items[items.length - 1].text += ' ' + line.trim(); continue; }
+      if (HR_RE.test(line)) { flush(); out.push('<hr>'); }
+      else if ((m = line.match(LIST_RE))) {
+        if (!items.length) flush();
+        items.push({ indent: m[1].replace(/\t/g, '    ').length, tag: /\d/.test(m[2]) ? 'ol' : 'ul', start: parseInt(m[2], 10) || 1, text: m[3] });
       }
-      else if (/^\s*\|.*\|\s*$/.test(line) && /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(lines[n + 1] || '')) {
-        flushPara(); flushList();
-        const cells = (l) => l.trim().replace(/^\||\|$/g, '').split('|').map((c) => inlineMd(c.trim()));
+      else if ((m = line.match(/^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/))) { flush(); out.push(`<${m[1].length <= 2 ? 'h3' : 'h4'}>${md(m[2])}</${m[1].length <= 2 ? 'h3' : 'h4'}>`); }
+      else if ((m = line.match(/^\s*\*\*([^*\n]+?)\*\*:?\s*$/))) { flush(); out.push(`<h4>${md(m[1])}</h4>`); }   // a line that is only bold = a title
+      else if ((m = line.match(/^\s*>\s?(.*)$/))) { if (!quote.length) flush(); quote.push(m[1]); }
+      else if (TBL_ROW.test(line) && TBL_SEP.test(lines[n + 1] || '')) {
+        flush();
+        const cells = (l) => l.trim().replace(/^\||\|$/g, '').split('|').map((c) => md(c.trim()));
         const head = cells(line); const rows = []; n += 2;
-        while (n < lines.length && /^\s*\|.*\|\s*$/.test(lines[n])) rows.push(cells(lines[n++]));
+        while (n < lines.length && TBL_ROW.test(lines[n])) rows.push(cells(lines[n++]));
         n--;
         out.push(`<div class="table-wrap"><table><thead><tr>${head.map((c) => `<th>${c}</th>`).join('')}</tr></thead><tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`);
       }
-      else { flushList(); para.push(line.trim()); }
+      else { if (!para.length) flush(); para.push(line.trim()); }
     }
-    flushPara(); flushList();
+    flush();
   });
   return out.join('');
 }
@@ -197,8 +251,8 @@ function stopSpeaking() {
   if (speechSupported()) window.speechSynthesis.cancel();
 }
 function cleanForSpeech(text) {
-  return text
-    .replace(/\[([^\]]+)\]\(https?:\/\/[^)]*\)/g, '$1')
+  return cleanMath(text)
+    .replace(/\[([^\]]+)\]\(https?:\/\/[^)]*\)/g, '$1').replace(/^\s*([-*_])(\s*\1){2,}\s*$/gm, '').replace(/~~|^\s*>\s?/gm, '').replace(/_{1,2}/g, ' ')
     .replace(/`+/g, '').replace(/\*+/g, '').replace(/^\s{0,3}#{1,6}\s+/gm, '')
     .replace(/^\s*[-•]\s+/gm, '').replace(/^\s*\|?\s*:?-{2,}[-:|\s]*$/gm, '').replace(/\|/g, ', ')
     .replace(/\s+/g, ' ').trim();
@@ -365,10 +419,10 @@ async function sendChatMessage() {
   const transcript = $('chat-transcript');
   const speaker = createSpeaker();
   let answer = '', frame = 0;
-  const paint = () => {
+  const paint = (done) => {
     frame = 0;
     const stick = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 90;
-    body.innerHTML = renderMarkdown(answer);
+    body.innerHTML = renderMarkdown(answer, done !== true);
     if (stick) transcript.scrollTop = transcript.scrollHeight;
   };
   try {
@@ -379,7 +433,7 @@ async function sendChatMessage() {
       if (!frame) frame = requestAnimationFrame(paint);
     });
     if (myConvo !== convoId) return;
-    cancelAnimationFrame(frame); paint();
+    cancelAnimationFrame(frame); paint(true);
     chatMessages.push({ role: 'assistant', content: answer });
     speaker?.finish();
     $('chat-status').textContent = `Connected · ${conn.model}`;
@@ -388,7 +442,7 @@ async function sendChatMessage() {
     cancelAnimationFrame(frame);
     const stopped = err.name === 'AbortError' && abortReason !== 'timeout';
     if (answer) {                                          // keep whatever streamed in before the stop/failure
-      paint(); chatMessages.push({ role: 'assistant', content: answer }); speaker?.finish();
+      paint(true); chatMessages.push({ role: 'assistant', content: answer }); speaker?.finish();
       $('chat-status').textContent = stopped ? 'Stopped.' : `Interrupted: ${err.message}`;
     } else {
       chatMessages.pop();                                  // don't leave a dangling user turn in the history
@@ -487,9 +541,10 @@ function stopVoiceInput(send = true) {
 /* ───────────────────────── Conversation view ───────────────────────── */
 function renderChat(v) {
   const projectName = v.projectName.trim() || 'IoT deployment';
-  systemPrompt = `You are Nodewise, a helpful IoT systems advisor for ECE students and builders. Be conversational, technically accurate, practical, and explicit about assumptions. Help with sensors, MCUs, connectivity (Wi-Fi, BLE, Zigbee, LoRaWAN, cellular, Ethernet, CAN where relevant), power budgeting, architecture, deployment, debugging, and security. Ask concise clarifying questions when necessary. Never invent datasheet specifications or claim a design is validated. Prefer actionable steps and explain trade-offs. You may use light Markdown (short lists, bold, tables, code blocks).\n\nPROJECT CONTEXT:\nThe user is planning an IoT/ECE project. Use this profile as context, but allow them to change direction or ask about any IoT use case.\nProject: ${projectName}\nGoal: ${v.goal}\nDistance: ${label('distance', v.distance)}\nPower: ${label('power', v.power)}\nData frequency: ${label('dataRate', v.dataRate)}\nEnvironment: ${label('environment', v.environment)}\nBudget: ${label('budget', v.budget)}\nInternet availability: ${label('coverage', v.coverage)}\n\nGive practical, uncertainty-aware engineering guidance. Ask clarifying questions when needed, compare alternatives, mention safety/security/regulatory considerations, and never claim untested coverage or exact battery life.`;
+  systemPrompt = `You are Nodewise, a helpful IoT systems advisor for ECE students and builders. Be conversational, technically accurate, practical, and explicit about assumptions. Help with sensors, MCUs, connectivity (Wi-Fi, BLE, Zigbee, LoRaWAN, cellular, Ethernet, CAN where relevant), power budgeting, architecture, deployment, debugging, and security. Ask concise clarifying questions when necessary. Never invent datasheet specifications or claim a design is validated. Prefer actionable steps and explain trade-offs. OUTPUT FORMAT (important): replies are read on small phone screens and may be read aloud, so write clean, plain text. Never use asterisks or underscores for emphasis (no **bold**, no *italic*), no LaTeX or dollar-sign math, no horizontal rules and no emojis. Use short paragraphs. Use \"- \" for bullets and \"1.\" for numbered steps. For a section title use a short line starting with \"## \". Use a table only to compare three or more options, with at most 4 columns. Put code, commands and configuration in fenced code blocks. Write units and symbols in plain text, for example 3.3 V, 10 mA, 868 MHz.\n\nPROJECT CONTEXT:\nThe user is planning an IoT/ECE project. Use this profile as context, but allow them to change direction or ask about any IoT use case.\nProject: ${projectName}\nGoal: ${v.goal}\nDistance: ${label('distance', v.distance)}\nPower: ${label('power', v.power)}\nData frequency: ${label('dataRate', v.dataRate)}\nEnvironment: ${label('environment', v.environment)}\nBudget: ${label('budget', v.budget)}\nInternet availability: ${label('coverage', v.coverage)}\n\nGive practical, uncertainty-aware engineering guidance. Ask clarifying questions when needed, compare alternatives, mention safety/security/regulatory considerations, and never claim untested coverage or exact battery life.`;
   resetConversation();
   $('results').innerHTML = `<div class="chat-header"><div><div class="section-kicker">NODEWISE AI / CONVERSATION</div><h2 class="result-title">${escapeHtml(projectName)}</h2><p class="result-subtitle">Your project profile is attached as context. Ask anything, then continue with follow-ups.</p></div><button class="secondary-button" id="edit-context" type="button">Edit profile</button></div><div class="context-strip"><span class="context-dot"></span> Project context attached · ${escapeHtml(label('power', v.power))} · ${escapeHtml(label('distance', v.distance))}</div><div class="chat-transcript" id="chat-transcript" aria-live="polite"><div class="chat-bubble assistant"><div class="bubble-label">NODEWISE</div><div class="bubble-text">Hi! I'm your IoT deployment assistant. I have your project profile as context. What would you like to figure out first? You can ask me to compare connectivity options, choose sensors, estimate power needs, design the architecture, or troubleshoot an issue.</div></div></div><div class="chat-compose"><textarea id="chat-input" class="text-input chat-textarea" rows="2" placeholder="Ask a follow-up about your IoT project…" aria-label="Message the IoT advisor"></textarea><button class="send-button" id="send-chat" type="button" aria-label="Send message">➤</button></div><div class="voice-controls"><button class="voice-button primary" id="voice-mic" type="button" aria-label="Start voice input">🎙 Start talking</button><button class="voice-button" id="voice-output" type="button" aria-pressed="true">🔊 Voice replies: on</button><button class="voice-button" id="voice-stop" type="button">■ Stop audio</button><span class="voice-hint" id="voice-hint" aria-live="polite">Tap the microphone and speak. It sends when you pause or tap again.</span></div><div class="chat-footer"><span id="chat-status"></span><button class="text-button" id="clear-chat" type="button">New conversation</button></div>`;
+  $('results').classList.add('chat-active');
   $('edit-context').onclick = () => { $('goal').focus(); $('advisor-form').scrollIntoView({ behavior: 'smooth', block: 'start' }); };
   $('send-chat').onclick = () => (chatBusy ? (abortReason = 'user', abortCtl?.abort()) : sendChatMessage());
   setupVoiceControls();

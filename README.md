@@ -1,4 +1,4 @@
-# Nodewise — IoT Deployment Advisor PWA (v6)
+# Nodewise — IoT Deployment Advisor PWA (v7)
 
 A responsive, installable PWA for an ECE / prompt-engineering project: a voice-capable chat advisor for planning IoT deployments.
 
@@ -6,7 +6,8 @@ A responsive, installable PWA for an ECE / prompt-engineering project: a voice-c
 - Android-friendly responsive interface, installable (manifest + PNG/maskable icons + offline app shell)
 - Optional project profile passed to the model as context
 - Chat with any OpenAI-compatible chat-completions API, with **streaming replies** (falls back to normal JSON replies automatically)
-- Replies rendered as safe Markdown (lists, bold, tables, code blocks, links)
+- Replies rendered as safe, cleaned-up Markdown (nested lists, bold, tables, code, links; stray `**`, LaTeX and half-streamed markers are hidden). The system prompt asks the model for plain, phone-friendly text
+- Responsive layout: sidebar on laptops, bottom navigation on tablets/phones, sticky full-height chat on desktop
 - **Saved connection**: endpoint, model and API key persist in the browser, so you only enter them once
 - Stop button while the model is answering; failed messages are put back in the input box
 - Push-to-talk voice input and spoken replies (read sentence-by-sentence as they stream in)

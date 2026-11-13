@@ -1,4 +1,4 @@
-const CACHE = 'nodewise-v6';
+const CACHE = 'nodewise-v7';
 const ASSETS = ['./', './index.html', './styles.css', './app.js', './manifest.webmanifest', './icon.svg', './icon-192.png', './icon-512.png', './icon-maskable-512.png'];
 
 self.addEventListener('install', (event) => {
